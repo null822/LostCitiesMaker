@@ -7,6 +7,41 @@
         mc:Ignorable="d"
         Title="MainWindow" Height="450" Width="800">
     <Grid>
+        
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="8*" />
+            <ColumnDefinition Width="24*" />
+            <ColumnDefinition Width="32" />
+        </Grid.ColumnDefinitions>
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="1*" />
+        </Grid.RowDefinitions>
+        
+        <TreeView Grid.Column="0" Grid.Row="0" Name="TreeView" ></TreeView>
+        
+        <ScrollBar Name="LayerScroll" Grid.Column="2" Grid.Row="0" Margin="0, 0, 0, 32" Width ="16" 
+                   Orientation="Vertical" Scroll="LayerScrollChange" Minimum="0" IsEnabled="False"
+                   RenderTransformOrigin="0.5,0.5">
+            <ScrollBar.RenderTransform>
+                <ScaleTransform ScaleY="-1"/>
+            </ScrollBar.RenderTransform>
+        </ScrollBar>
+        
+        <TextBox Name="LayerNumber" TextChanged="LayerNumber_TextChanged" Grid.Column="2" Grid.Row="0"
+                 VerticalAlignment="Bottom" Margin="0, 0, 0, 0" Height ="16" Width="32" Text="0" IsEnabled="False"/>
+        
+        <Image Name="Editor" Grid.Column="1" Grid.Row="0" Margin="20, 20, 20, 20"
+               Stretch="Uniform"
+               RenderOptions.BitmapScalingMode="Fant"
+               
+               MouseWheel="Editor_OnMouseWheel"
+               >
+        </Image>
+        
+        <ScrollViewer Visibility="Visible" Grid.Column="1" Grid.Row="0" HorizontalAlignment="Right" MinWidth="150">
+            <TextBlock Name="Log" TextWrapping="Wrap" HorizontalAlignment="Right" MinWidth="150"></TextBlock>
+        </ScrollViewer>
 
     </Grid>
 </Window>
