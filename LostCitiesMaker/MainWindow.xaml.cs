@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Linq;
 using System.Text;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -39,7 +40,7 @@ public partial class MainWindow
         #region Assets // for rendering (and block discovery)
         
         Dictionary<string, string> blockStates = new();
-        Dictionary<string, JObject> models = new();
+        //Dictionary<string, JObject> models = new();
 
 
         using (var archive = ZipFile.OpenRead(assetsPath))
@@ -55,8 +56,30 @@ public partial class MainWindow
 
                     var image = (Bitmap)Image.FromStream(entry.Open());
 
-                    Assets.Textures.Add(image);
-                    Assets.TextureIndex.Add(path, index);
+                    
+                    
+                    var pathCopy = path;
+
+                    var sepIndex1 = pathCopy.IndexOf("/", StringComparison.Ordinal);
+                    
+                    pathCopy = (sepIndex1 < 0)
+                        ? pathCopy
+                        : pathCopy.Remove(sepIndex1, 1);
+                    var sepIndex2 = pathCopy.IndexOf("/", StringComparison.Ordinal);
+                    
+                    pathCopy = (sepIndex2 < 0)
+                        ? pathCopy
+                        : pathCopy.Remove(sepIndex2, 1);
+                    var sepIndex3 = pathCopy.IndexOf("/", StringComparison.Ordinal);
+                    
+                    
+                    var modId = path.AsSpan(0, sepIndex1).ToString(); // ModID
+                    var type = path.AsSpan(sepIndex2 + 2, sepIndex3 - sepIndex2).ToString(); // Type
+                    var assetName = string.Concat(modId, ":", type, "/", name);
+                    
+                    // Console.WriteLine(assetName);
+                    Assets.Textures.TryAdd(assetName, image);
+
 
                     index++;
                 }
@@ -64,6 +87,11 @@ public partial class MainWindow
                 if (entry.FullName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
                 {
                     var name = filename[..^5];
+                    
+                    var path = entry.FullName[..^5];
+                    var sepIndex1 = path.IndexOf("/", StringComparison.Ordinal);
+                    var modId = path.AsSpan(0, sepIndex1).ToString(); // ModID
+
 
                     string fileContents;
                     using (var reader = new StreamReader(entry.Open()))
@@ -72,7 +100,7 @@ public partial class MainWindow
                     }
 
                     // blockstate
-                    if (entry.FullName.StartsWith("minecraft/blockstates/", StringComparison.OrdinalIgnoreCase))
+                    if (entry.FullName.StartsWith(modId + "/blockstates/", StringComparison.OrdinalIgnoreCase))
                     {
                         var contents = JObject.Parse(fileContents);
 
@@ -92,11 +120,8 @@ public partial class MainWindow
                                     ((JObject)kvp.Value).GetValue("model").ToString();
 
                                 // Console.WriteLine(stateName + " => " + modelName);
-
-                                var modelNameBuilder = new StringBuilder(modelName);
-                                modelNameBuilder.Replace("minecraft:block/", "");
-                                    
-                                blockStates.TryAdd(stateName, modelNameBuilder.ToString());
+                                
+                                blockStates.TryAdd(stateName, modelName);
                             }
                         }
 
@@ -150,11 +175,8 @@ public partial class MainWindow
                                     var stateName = properties.ToString() != ""
                                         ? name + "[" + properties.Remove(properties.Length - 1, 1) + "]"
                                         : name;
-
-                                    var modelNameBuilder = new StringBuilder(modelName);
-                                    modelNameBuilder.Replace("minecraft:block/", "");
                                     
-                                    blockStates.TryAdd(stateName, modelNameBuilder.ToString());
+                                    blockStates.TryAdd(stateName, modelName);
 
                                     // Console.WriteLine(stateName + " => " + modelName);
                                 }
@@ -164,9 +186,10 @@ public partial class MainWindow
                     }
                     
                     // model
-                    if (entry.FullName.StartsWith("minecraft/models/block/", StringComparison.OrdinalIgnoreCase))
+                    if (entry.FullName.StartsWith(modId + "/models/block/", StringComparison.OrdinalIgnoreCase))
                     {
-                        models.Add(name, JObject.Parse(fileContents));
+                        Assets.AdditionalModels.Add(modId + ":block/" + name, JObject.Parse(fileContents));
+                        //Console.WriteLine(modId + ":block/" + name);
                     }
                 }
 
@@ -180,15 +203,21 @@ public partial class MainWindow
 
         foreach (var blockState in blockStates)
         {
-            if (models.ContainsKey(blockState.Value))
+            if (Assets.AdditionalModels.TryGetValue(blockState.Value, out JObject model))
             {
-                Assets.Models.Add(blockState.Key, models[blockState.Value]);
+                Assets.Models.Add(blockState.Key, model);
             }
             else
             {
-                Console.WriteLine("Model Not Found: " + blockState.Value);
+                Console.WriteLine("Model Not Found: " + blockState.Value + " / " + blockState.Key);
             }
         }
+
+        foreach (var model in Assets.Models)
+        {
+            Assets.AdditionalModels.Remove(model.Key);
+        }
+
 
         #endregion
 
@@ -518,7 +547,7 @@ public partial class MainWindow
                     var name = nameStrings[1];
                     
 
-                    var texture = new Bitmap(GetTexture(nameSpace + "/textures/block/" + name), 16, 16);
+                    var texture = new Bitmap(GetTextureFromBlockState(name, 5), 16, 16);
                     
                     var layer = layers[iy];
 
@@ -554,27 +583,198 @@ public partial class MainWindow
 
         return new[] { nameSpace, name };
     }
+    
+    /**
+     * Converts blockState to Texture.
+     * 
+     * direction:
+     * 0 :  X : east
+     * 1 :  Y : up
+     * 2 :  Z : south
+     * 3 : -X : west
+     * 4 : -Y : down
+     * 5 : -Z : north
+     */
+    private Bitmap GetTextureFromBlockState(string blockstate, ushort direction)
+    {
+        var directionString = direction switch
+        {
+            0 => "east",
+            1 => "up",
+            2 => "south",
+            3 => "west",
+            4 => "down",
+            5 => "north",
+            _ => ""
+        };
+
+        if (blockstate == "air")
+        {
+            return GetTexture("minecraft:block/air");
+        }
+        
+        if (!Assets.Models.ContainsKey(blockstate))
+        {
+            return GetTexture(blockstate);
+        }
+        
+        var model = Assets.Models[blockstate];
+
+        if (model.ContainsKey("parent"))
+        {
+            var parent = model["parent"].Value<string>();
+
+            if (parent is "minecraft:block/cube_all" or "minecraft:block/cube_column")
+            {
+                var modelTextures = (JObject)model["textures"];
+
+                if (modelTextures.ContainsKey("all"))
+                    return GetTexture(modelTextures["all"].Value<string>());
+                if (modelTextures.ContainsKey("side"))
+                    return GetTexture(modelTextures["side"].Value<string>());
+            }
+
+        }
+
+        //var parentModel = Assets.AdditionalModels[parent];
+        
+
+        // elements could be in model or in parent model or in parent parent model etc.
+            JArray? elements = null;
+            
+            var textureDefinitions = new Dictionary<string, string>();
+
+            var found = new bool[] { false, false };
+            
+            var currentModel = model;
+            while (true)
+            {
+                if (currentModel.TryGetValue("elements", out var elementTokens) && !found[0])
+                {
+                    elements = (JArray)elementTokens;
+                    found[0] = true;
+                }
+                
+                if (currentModel.TryGetValue("textures", out var modelTextures) && !found[1])
+                {
+                    foreach (var modelTexture in (JObject)modelTextures)
+                    {
+                        textureDefinitions.Add("#" + modelTexture.Key, modelTexture.Value.Value<string>());
+                    }
+                    found[1] = true;
+                }
+
+                if (currentModel.TryGetValue("parent", out var modelParentName))
+                {
+                    if (Assets.AdditionalModels.TryGetValue(modelParentName.Value<string>(), out var modelParent))
+                        currentModel = modelParent;
+                }
+                else
+                    break; //quit
+
+                if (found[0] && found[1])
+                    break; // exit with results
+            }
+
+            var modelElements = new List<ModelElement>();
+
+            if (elements != null)
+            {
+                Console.WriteLine("found. " + blockstate);
+
+                foreach (var element in elements)
+                {
+                    var modelElement = new ModelElement();
+                    
+                    // Cube bounds (to/from)
+                    var fromTokens = new JToken[3];
+                    var toTokens = new JToken[3];
+                    ((JArray)element["from"]).CopyTo(fromTokens, 0);
+                    ((JArray)element["to"]).CopyTo(toTokens, 0);
+                    for (var i = 0; i < 3; i++)
+                    {
+                        modelElement.From[i] = fromTokens[i].Value<int>();
+                        modelElement.To[i] = toTokens[i].Value<int>();
+                    }
+                    
+                    // Faces
+                    if (((JObject)element["faces"]).TryGetValue(directionString, out var face))
+                    {
+                        // Texture UV
+                        var uvTokens = new JToken[4];
+                        ((JArray)face["uv"]).CopyTo(uvTokens, 0);
+                        for (var i = 0; i < 4; i++)
+                            modelElement.UV[i] = uvTokens[i].Value<int>();
+
+                        modelElement.Tex = face["texture"].Value<string>();
+                        
+                        modelElements.Add(modelElement);
+                    }
+                    
+                }
+            }
+
+            var sign = (short)(direction < 3 ? 1 : -1);
+            var axis = (short)(direction > 2 ? direction - 3 : direction);
+            
+            //Console.WriteLine(sign + ", " + axis);
+            
+            var sortedModelElements = modelElements.ToArray().OrderBy(e => Math.Max(e.From[axis] * sign, e.To[axis] * sign));
+
+            var resultTexture = new Bitmap(16, 16); // ! assuming 16x textures !
+            foreach (var modelElement in sortedModelElements)
+            {
+                var width = Math.Abs(modelElement.UV[0] - modelElement.UV[2]);
+                var height = Math.Abs(modelElement.UV[1] - modelElement.UV[3]);
+                
+                var originalTexture = GetTexture(textureDefinitions[modelElement.Tex]);
+                var texture = new Bitmap(width, height);
+
+                
+                for (var x = 0; x < width; x++)
+                {
+                    for (var y = 0; y < height; y++)
+                    {
+                        texture.SetPixel(x, y, originalTexture.GetPixel(x + modelElement.UV[0], y + modelElement.UV[1]));
+                    }
+                }
+                
+                texture.Save("temp.png");
+                
+
+                using var gr2 = Graphics.FromImage(resultTexture);
+                gr2.DrawImage(texture, modelElement.From[0], modelElement.From[1]);
+            }
+
+            return resultTexture;
+        
+
+        // non-cube: "uv": [ x, y, w, h ]
+        
+        return GetTexture(blockstate);
+    }
 
     private Bitmap GetTexture(string name)
     {
+        if (!name.Contains(':')) name = "minecraft:" + name;
+        
         while (true)
         {
             // Command blocks are automatically replaced by air on world gen,
             // used as air that will not get replaced by other blocks.
-            if (name == "minecraft/textures/block/command_block")
+            if (name == "minecraft:block/command_block")
             {
-                GetTexture("minecraft/textures/block/air");
+                GetTexture("minecraft:block/air");
             }
+            
 
-            if (Assets.TextureIndex.TryGetValue(name, out var value))
-            {
-                var index = value.Value<int>();
-                return Assets.Textures[index];
-            }
+            if (Assets.Textures.TryGetValue(name, out var texture))
+                return texture;
+            
+            // missing texture handling
+            if (!name.EndsWith('/')) LogLine("Missing Asset For: " + name);
 
-            if (!name.EndsWith('/')) LogLine("missing asset: " + name);
-
-            name = "minecraft/textures/missing";
+            name = "minecraft:block/missing";
         }
     }
 
@@ -662,6 +862,20 @@ public partial class MainWindow
         Log.Text = Log.Text + s + Environment.NewLine;
 
     }
+
+    private struct ModelElement
+    {
+        public int[] From = new int[3];
+        public int[] To = new int[3];
+
+        public string Tex = "";
+        
+        public int[] UV = new int[4];
+
+        public ModelElement()
+        {
+        }
+    }
 }
 
 internal static class Data
@@ -673,11 +887,9 @@ internal static class Data
 
 internal static class Assets
 {
-    public static readonly List<Bitmap> Textures = new();
-    public static readonly JObject TextureIndex = new();
-
-    public static readonly Dictionary<string, JObject> Models = new();
-
+    public static readonly Dictionary<string, Bitmap> Textures = new(); // path_to_texture : texture      | minecraft/textures/block/oak_log : (stone bitmap)
+    public static readonly Dictionary<string, JObject> Models = new(); // name_of_blockstate : model_json | oak_log[axis=x] : (oak_log model (axis = x))
+    public static readonly Dictionary<string, JObject> AdditionalModels = new(); // name_of_model : model_json | minecraft:block/cube/all : (block model (axis = x))
 }
 
 internal static class ProgramData
