@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -12,14 +13,29 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Newtonsoft.Json.Linq;
+using Color = System.Drawing.Color;
 using Image = System.Drawing.Image;
 
 namespace LostCitiesMaker;
 
 public partial class MainWindow
 {
-    private const int Scale = 1;
 
+    
+    private ushort _viewDirection = 5;
+    private string _currentPartName = "Root";
+
+    private static readonly ushort[][] ProjectionPlanes = 
+    {
+        new ushort[] { 2, 1 }, // 0, E, +X = 21
+        new ushort[] { 3, 5 }, // 1, U, +Y = 35
+        new ushort[] { 3, 1 }, // 2, S, +Z = 31
+        new ushort[] { 5, 1 }, // 3, W, -X = 51
+        new ushort[] { 3, 2 }, // 4, D, -Y = 32
+        new ushort[] { 0, 1 }  // 5, N, -Z = 01
+    };
+
+    private static readonly Color BaseColor = Color.FromArgb(32, 255, 255, 255);
     
     public MainWindow()
     {
@@ -30,6 +46,9 @@ public partial class MainWindow
         LoadData();
     }
     
+    /// <summary>
+    /// Huge method that runs on startup, loading all of the assets and data into the Data class
+    /// </summary>
     private void LoadData()
     {
         var index = 0;
@@ -226,7 +245,7 @@ public partial class MainWindow
         const string nodeName = "Root";
         TreeView.Items.Clear();
         var partsNode = new TreeView { Name = nodeName };
-        partsNode.MouseDoubleClick += LoadPart;
+        partsNode.MouseDoubleClick += PartsNode_Onclick;
         TreeView.Items.Add(partsNode);
             
         
@@ -310,7 +329,7 @@ public partial class MainWindow
                         {
                             Name = name
                         };
-                        subnode.MouseDoubleClick += LoadPart;
+                        subnode.MouseDoubleClick += PartsNode_Onclick;
                         subnode.Header = name;
                         partsNode.Items.Add(subnode);
 
@@ -382,32 +401,7 @@ public partial class MainWindow
         #endregion
         
     }
-
-
-    private void LayerScrollChange(object sender, EventArgs e)
-    {
-        var value = (int)Math.Round(LayerScroll.Value);
-
-        SetLayer(value);
-    }
     
-    private void LayerNumber_TextChanged(object sender, EventArgs e)
-    {
-        try
-        {
-            var value = int.Parse(LayerNumber.Text);
-
-            SetLayer(value);
-        }
-        catch { }
-
-    }
-    
-    private void Editor_OnMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        SetLayer(e.Delta < 0 ? ProgramData.Layer - 1 : ProgramData.Layer + 1);
-    }
-
     private void SetLayer(int value)
     {
         var maxValue = (int)Math.Round(LayerScroll.Maximum);
@@ -424,37 +418,22 @@ public partial class MainWindow
         LayerNumber.Text = value.ToString();
     }
 
+    /// <summary>
+    /// Displays and image in the Editor.
+    /// </summary>
+    /// <param name="image">The image to display</param>
     private void DisplayImage(Image image)
     {
         Editor.Source = BitmapToSource(image);
     }
     
-    private static Bitmap ResizeImage(Image image, int width, int height)
-    {
-        var destRect = new Rectangle(0, 0, width, height);
-        var destImage = new Bitmap(width, height);
-
-        destImage.SetResolution(image.HorizontalResolution, image.VerticalResolution);
-
-        using var graphics = Graphics.FromImage(destImage);
-        graphics.CompositingMode = CompositingMode.SourceCopy;
-        graphics.CompositingQuality = CompositingQuality.HighQuality;
-        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        graphics.SmoothingMode = SmoothingMode.HighQuality;
-        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-
-        using var wrapMode = new ImageAttributes();
-        wrapMode.SetWrapMode(WrapMode.TileFlipXY);
-        graphics.DrawImage(image, destRect, 0, 0, image.Width,image.Height, GraphicsUnit.Pixel, wrapMode);
-
-        return destImage;
-    }
-    
-    
-    
+    /// <summary>
+    /// Converts a Bitmap to a BitmapSource
+    /// </summary>
+    /// <param name="image">The image to convert</param>
+    /// <returns>The converted image</returns>
     private static BitmapSource BitmapToSource(Image image)
     {
-        
         using var memory = new MemoryStream();
         
         image.Save(memory, ImageFormat.Png);
@@ -467,32 +446,20 @@ public partial class MainWindow
         
         return bitmapImage;
     }
-
-
-    private void LoadPart(object sender, MouseButtonEventArgs e)
+    
+    /// <summary>
+    /// Loads a part and renders it to the screen.
+    /// </summary>
+    /// <param name="partName">The name of the part</param>
+    private void LoadPart(string partName)
     {
-        var nodeName = "Root";
-
-        try
-        {
-            nodeName = ((TreeViewItem)sender).Name;
-        }
-        catch
-        {
-            nodeName = ((TreeView)sender).Name;
-        }
         
-        
-        if (nodeName == "Root")
-            return;
-
-
-        var part = Data.Parts[nodeName].Value<JObject>();
+        var part = Data.Parts[partName].Value<JObject>();
 
         // Load data from part
 
         var refpalette = "";
-        var meta = new JArray();
+        var meta = new JArray(); // ! unused model parameter !
 
         refpalette = part["refpalette"].Value<string>();
         meta = part["meta"].Value<JArray>();
@@ -541,13 +508,13 @@ public partial class MainWindow
 
                     var block = LookupCharDef(blockChar, refpalette);
 
-                    var nameStrings = GetNameSpace(block);
+                    var nameStrings = SplitName(block);
 
                     var nameSpace = nameStrings[0];
                     var name = nameStrings[1];
                     
 
-                    var texture = new Bitmap(GetTextureFromBlockState(name, 5), 16, 16);
+                    var texture = new Bitmap(GetTextureFromBlockState(name, _viewDirection), 16, 16);
                     
                     var layer = layers[iy];
 
@@ -566,12 +533,16 @@ public partial class MainWindow
 
         ProgramData.Layers = layers;
 
-        DisplayImage(layers[0]);
+        DisplayImage(layers[ProgramData.Layer]);
     }
 
 
-
-    private static string[] GetNameSpace(string fullName)
+    /// <summary>
+    /// Splits a full name into a namespace and a name.
+    /// </summary>
+    /// <param name="fullName">full name, with namespace and name separated with a ':'</param>
+    /// <returns>An array containing the namespace and name, in that order</returns>
+    private static string[] SplitName(string fullName)
     {
 
         var colonPos = fullName.IndexOf(':');
@@ -584,190 +555,154 @@ public partial class MainWindow
         return new[] { nameSpace, name };
     }
     
-    /**
-     * Converts blockState to Texture.
-     * 
-     * direction:
-     * 0 :  X : east
-     * 1 :  Y : up
-     * 2 :  Z : south
-     * 3 : -X : west
-     * 4 : -Y : down
-     * 5 : -Z : north
-     */
+    /// <summary>
+    /// Renders a blockState to texture.
+    ///<br></br><br></br>
+    /// Direction Key:<br></br>
+    /// 0 =  X = east<br></br>
+    /// 1 =  Y = up<br></br>
+    /// 2 =  Z = south<br></br>
+    /// 3 = -X = west<br></br>
+    /// 4 = -Y = down<br></br>
+    /// 5 = -Z = north<br></br>
+    
+    /// </summary>
+    /// <param name="blockstate">The blockstate to render</param>
+    /// <param name="direction">The direction you are relative to the block</param>
+    /// <returns>An image of the block from that direction</returns>
     private Bitmap GetTextureFromBlockState(string blockstate, ushort direction)
     {
-        var directionString = direction switch
-        {
-            0 => "east",
-            1 => "up",
-            2 => "south",
-            3 => "west",
-            4 => "down",
-            5 => "north",
-            _ => ""
-        };
+        // Manual Override
+        //blockstate = "ladder[facing=north]";
 
+        // air has no model
         if (blockstate == "air")
         {
             return GetTexture("minecraft:block/air");
         }
         
+        // if we do not have a model file for this block, log it
         if (!Assets.Models.ContainsKey(blockstate))
         {
-            return GetTexture(blockstate);
+            LogLine("Missing Model For Blockstate: " + blockstate);
+            return GetTexture("minecraft:block/missing");
         }
         
-        var model = Assets.Models[blockstate];
+        // Decode the model
+        var decodedModel = DecodeModel(blockstate, direction);
 
-        if (model.ContainsKey("parent"))
+        var isSolid = (bool)decodedModel[0];
+        
+        // Solid models can skip rendering it as a full model, for performance reasons
+        if (isSolid)
+            return GetTexture((string)decodedModel[1]);
+        
+        // for non-solid models:
+        // get model data
+        var modelElements = (List<ModelElement>)decodedModel[1];
+        var textureDefinitions = (Dictionary<string, string>)decodedModel[2];
+        
+        // calculate the size of the model
+        var maxCoord = 0;
+        var minCoord = 0;
+        
+        foreach (var modelElement in modelElements)
         {
-            var parent = model["parent"].Value<string>();
-
-            if (parent is "minecraft:block/cube_all" or "minecraft:block/cube_column")
+            for (var i = 0; i < 3; i++)
             {
-                var modelTextures = (JObject)model["textures"];
-
-                if (modelTextures.ContainsKey("all"))
-                    return GetTexture(modelTextures["all"].Value<string>());
-                if (modelTextures.ContainsKey("side"))
-                    return GetTexture(modelTextures["side"].Value<string>());
+                maxCoord = Math.Max(maxCoord, modelElement.From[i]);
+                maxCoord = Math.Max(maxCoord, modelElement.To[i]);
+                
+                minCoord = Math.Min(minCoord, modelElement.From[i]);
+                minCoord = Math.Min(minCoord, modelElement.To[i]);
             }
+        }
+        
+        var texSize = Math.Max(16, maxCoord - minCoord);
+        var texOffset = -minCoord;
+        
+        Console.WriteLine("========min/max========");
+        Console.WriteLine(minCoord);
+        Console.WriteLine(maxCoord);
+        Console.WriteLine("========size/offset========");
+        Console.WriteLine(texSize);
+        Console.WriteLine(texOffset);
 
+        var splitDirection = SplitDirection(direction);
+
+        var axis = splitDirection[0];
+        var sign = splitDirection[1];
+
+        // sort the elements from furthest to closest
+        var sortedModelElements = modelElements.ToArray().OrderBy(e => Math.Max(e.From[axis] * sign, e.To[axis] * sign));
+        
+        // create resulting texture
+        var resultTexture = new Bitmap(texSize, texSize);
+    
+        
+        // draw each element onto the texture
+        foreach (var modelElement in sortedModelElements)
+        {
+            var originalTexture = GetTexture(textureDefinitions[modelElement.Tex]);
+            var texture = new Bitmap(texSize, texSize);
+            
+            // Add a slight "fog" to better distinguish depth
+            for (var x = 0; x < texSize; x++)
+            {
+                for (var y = 0; y < texSize; y++)
+                {
+                    texture.SetPixel(x, y, BaseColor);
+                }
+            }
+            
+            var flattenedCoords = FlattenCoords(modelElement.From, modelElement.To, direction);
+
+            var startX  = flattenedCoords[0];
+            var startY  = flattenedCoords[1];
+            var finishX = flattenedCoords[2];
+            var finishY = flattenedCoords[3];
+            
+            Console.WriteLine("=======START/FINISH X======");
+            Console.WriteLine(startX + ", " + finishX);
+            Console.WriteLine("=======START/FINISH Y======");
+            Console.WriteLine(startY + ", " + finishY);
+            
+            // cut out UV from original texture and paste it on top of resulting texture
+            for (var x = startX; x < finishX; x++)
+            {
+                for (var y = startY; y < finishY; y++)
+                {
+                    texture.SetPixel(texOffset + x, texOffset + y, originalTexture.GetPixel(x-startX, y-startY));
+                }
+            }
+            
+            using var gr2 = Graphics.FromImage(resultTexture);
+            gr2.DrawImage(texture, 0, 0);
         }
 
-        //var parentModel = Assets.AdditionalModels[parent];
-        
-
-        // elements could be in model or in parent model or in parent parent model etc.
-            JArray? elements = null;
-            
-            var textureDefinitions = new Dictionary<string, string>();
-
-            var found = new bool[] { false, false };
-            
-            var currentModel = model;
-            while (true)
-            {
-                if (currentModel.TryGetValue("elements", out var elementTokens) && !found[0])
-                {
-                    elements = (JArray)elementTokens;
-                    found[0] = true;
-                }
-                
-                if (currentModel.TryGetValue("textures", out var modelTextures) && !found[1])
-                {
-                    foreach (var modelTexture in (JObject)modelTextures)
-                    {
-                        textureDefinitions.Add("#" + modelTexture.Key, modelTexture.Value.Value<string>());
-                    }
-                    found[1] = true;
-                }
-
-                if (currentModel.TryGetValue("parent", out var modelParentName))
-                {
-                    if (Assets.AdditionalModels.TryGetValue(modelParentName.Value<string>(), out var modelParent))
-                        currentModel = modelParent;
-                }
-                else
-                    break; //quit
-
-                if (found[0] && found[1])
-                    break; // exit with results
-            }
-
-            var modelElements = new List<ModelElement>();
-
-            if (elements != null)
-            {
-                Console.WriteLine("found. " + blockstate);
-
-                foreach (var element in elements)
-                {
-                    var modelElement = new ModelElement();
-                    
-                    // Cube bounds (to/from)
-                    var fromTokens = new JToken[3];
-                    var toTokens = new JToken[3];
-                    ((JArray)element["from"]).CopyTo(fromTokens, 0);
-                    ((JArray)element["to"]).CopyTo(toTokens, 0);
-                    for (var i = 0; i < 3; i++)
-                    {
-                        modelElement.From[i] = fromTokens[i].Value<int>();
-                        modelElement.To[i] = toTokens[i].Value<int>();
-                    }
-                    
-                    // Faces
-                    if (((JObject)element["faces"]).TryGetValue(directionString, out var face))
-                    {
-                        // Texture UV
-                        var uvTokens = new JToken[4];
-                        ((JArray)face["uv"]).CopyTo(uvTokens, 0);
-                        for (var i = 0; i < 4; i++)
-                            modelElement.UV[i] = uvTokens[i].Value<int>();
-
-                        modelElement.Tex = face["texture"].Value<string>();
-                        
-                        modelElements.Add(modelElement);
-                    }
-                    
-                }
-            }
-
-            var sign = (short)(direction < 3 ? 1 : -1);
-            var axis = (short)(direction > 2 ? direction - 3 : direction);
-            
-            //Console.WriteLine(sign + ", " + axis);
-            
-            var sortedModelElements = modelElements.ToArray().OrderBy(e => Math.Max(e.From[axis] * sign, e.To[axis] * sign));
-
-            var resultTexture = new Bitmap(16, 16); // ! assuming 16x textures !
-            foreach (var modelElement in sortedModelElements)
-            {
-                var width = Math.Abs(modelElement.UV[0] - modelElement.UV[2]);
-                var height = Math.Abs(modelElement.UV[1] - modelElement.UV[3]);
-                
-                var originalTexture = GetTexture(textureDefinitions[modelElement.Tex]);
-                var texture = new Bitmap(width, height);
-
-                
-                for (var x = 0; x < width; x++)
-                {
-                    for (var y = 0; y < height; y++)
-                    {
-                        texture.SetPixel(x, y, originalTexture.GetPixel(x + modelElement.UV[0], y + modelElement.UV[1]));
-                    }
-                }
-                
-                texture.Save("temp.png");
-                
-
-                using var gr2 = Graphics.FromImage(resultTexture);
-                gr2.DrawImage(texture, modelElement.From[0], modelElement.From[1]);
-            }
-
-            return resultTexture;
-        
-
-        // non-cube: "uv": [ x, y, w, h ]
-        
-        return GetTexture(blockstate);
+        return resultTexture;
     }
-
+    /// <summary>
+    /// Gets the texture (Bitmap) at the provided path
+    /// </summary>
+    /// <param name="name">The path to the texture</param>
+    /// <returns>A texture (Bitmap)</returns>
     private Bitmap GetTexture(string name)
     {
         if (!name.Contains(':')) name = "minecraft:" + name;
+        
+        //Console.WriteLine(name);
         
         while (true)
         {
             // Command blocks are automatically replaced by air on world gen,
             // used as air that will not get replaced by other blocks.
-            if (name == "minecraft:block/command_block")
+            if (name == "minecraft:command_block")
             {
-                GetTexture("minecraft:block/air");
+                return GetTexture("minecraft:block/air");
             }
             
-
+            
             if (Assets.Textures.TryGetValue(name, out var texture))
                 return texture;
             
@@ -778,7 +713,12 @@ public partial class MainWindow
         }
     }
 
-
+    /// <summary>
+    /// Gets the path to the texture referenced by the provided char in the provided refpalette
+    /// </summary>
+    /// <param name="character">The character to look up</param>
+    /// <param name="refpalette">The refpalette to look the character up in</param>
+    /// <returns>The path to the texture</returns>
     private string LookupCharDef(char character, string refpalette)
     {
         while (true)
@@ -855,43 +795,394 @@ public partial class MainWindow
             refpalette = "common";
         }
     }
+    
+    /// <summary>
+    /// Gets the model for the provided blockstate, and decodes it.<br></br><br></br>
+    ///
+    /// Returns an Arraylist:<br></br>
+    /// [0] = true if the block is solid (we can simply render the texture).<br></br>
+    /// [1] = if [0] is true, contains the path to the texture to render. Otherwise it contains a List&lt;ModelData&gt;.<br></br>
+    /// [2] = if [0] is true, null, otherwise it contains a Dictionary&lt;string,string&gt; of Key : Value = texture_name_in_model : path_to_texture.
+    /// </summary>
+    /// <param name="blockstate">The blockstate to get the model from and decode</param>
+    /// <param name="direction">The direction you are relative to the block</param>
+    /// <returns>The model's data</returns>
+    private ArrayList DecodeModel(string blockstate, ushort direction)
+    {
+        var model = Assets.Models[blockstate];
+        var directionString = DirectionIntToString(direction);
+
+        var solidBlock = false;
+        var solidTexture = "";
+
+        if (model.ContainsKey("parent"))
+        {
+            var parent = model["parent"].Value<string>();
+
+            if (parent is "minecraft:block/cube_all" or "minecraft:block/cube_column") // full block rendering
+            {
+                solidBlock = true;
+                var modelTextures = (JObject)model["textures"];
+
+                if (modelTextures.ContainsKey("all"))
+                    solidTexture = modelTextures["all"].Value<string>();
+                if (modelTextures.ContainsKey("side"))
+                    solidTexture = modelTextures["side"].Value<string>();
+            }
+
+        }
+
+        // specific model rendering        
+        if (!solidBlock)
+        {
+            
+            var textureDefinitions = new Dictionary<string, string>();
+            var modelElements = new List<ModelElement>();
+            
+            
+            // elements could be in model or in parent model or in parent parent model etc.
+            JArray? elements = null;
 
 
+            var found = new bool[] { false, false };
+
+            var currentModel = model;
+            while (true)
+            {
+                if (currentModel.TryGetValue("elements", out var elementTokens) && !found[0])
+                {
+                    elements = (JArray)elementTokens;
+                    found[0] = true;
+                }
+
+                // get texture definitions
+
+                if (currentModel.TryGetValue("textures", out var modelTextures) && !found[1])
+                {
+                    foreach (var modelTexture in (JObject)modelTextures)
+                    {
+                        textureDefinitions.Add("#" + modelTexture.Key, modelTexture.Value.Value<string>());
+                    }
+
+                    found[1] = true;
+                }
+
+                if (currentModel.TryGetValue("parent", out var modelParentName))
+                {
+                    if (Assets.AdditionalModels.TryGetValue(modelParentName.Value<string>(), out var modelParent))
+                        currentModel = modelParent;
+                }
+                else
+                    break; //quit
+
+                if (found[0] && found[1])
+                    break; // exit with results
+            }
+            
+            if (elements != null)
+            {
+                Console.WriteLine("found. " + blockstate);
+
+
+                // Load model elements
+                foreach (var element in elements)
+                {
+                    var modelElement = new ModelElement();
+
+                    // Cube bounds (to/from)
+                    var fromTokens = new JToken[3];
+                    var toTokens = new JToken[3];
+                    ((JArray)element["from"]).CopyTo(fromTokens, 0);
+                    ((JArray)element["to"]).CopyTo(toTokens, 0);
+                    for (var i = 0; i < 3; i++)
+                    {
+                        modelElement.From[i] = fromTokens[i].Value<int>();
+                        modelElement.To[i] = toTokens[i].Value<int>();
+                    }
+
+                    // Cube UV
+                    if (((JObject)element["faces"]).TryGetValue(directionString, out var face))
+                    {
+
+                        modelElement.Tex = face["texture"].Value<string>();
+
+                        var uvTokens = new JToken[4];
+
+                        if (!((JObject)face)
+                            .ContainsKey("uv")) // if the face does not specify a texture UV, use the whole texture
+                        {
+                            var texture = GetTexture(textureDefinitions[modelElement.Tex]);
+                            ((JObject)face).Add("uv", new JArray { 0, 0, texture.Width, texture.Height });
+                        }
+
+
+                        ((JArray)face["uv"]).CopyTo(uvTokens, 0);
+                        for (var i = 0; i < 4; i++)
+                            modelElement.UV[i] = uvTokens[i].Value<int>();
+
+
+                        modelElements.Add(modelElement);
+                    }
+
+                }
+            }
+            return new ArrayList {false, modelElements, textureDefinitions};
+        }
+        
+        return new ArrayList {true, solidTexture, null};
+        
+    }
+    
+    
+    /// <summary>
+    /// Converts 2 opposing 3D Coordinates (To and From for a rectangular prism) into 2 opposing corner coordinates (3D) of a 2D rectangle in this order: <br></br>
+    /// [0] = Top Left X<br></br>
+    /// [1] = Top Left Y<br></br>
+    /// [2] = Bottom Right X<br></br>
+    /// [3] = Bottom Right Y<br></br>
+    /// </summary>
+    /// <param name="c1">The first 3D Coordinate</param>
+    /// <param name="c2">The second, opposing, 3D Coordinate</param>
+    /// <param name="direction">The direction we are, relative to the object (negated facing direction)</param>
+    /// <returns>2 3D Coordinates</returns>
+    private static int[] FlattenCoords(IReadOnlyList<int> c1, IReadOnlyList<int> c2, ushort direction)
+    {
+        // get position of the 4 faces which make up the 4 edges of the rectangle
+        var projectionPlane = ProjectionPlanes[direction];
+        
+        // UP / SOUTH
+        
+        // get axis part of the direction
+        var horizontalAxis = SplitDirection(projectionPlane[0])[0];
+        var verticalAxis = SplitDirection(projectionPlane[1])[0];
+        
+        Console.WriteLine("======HOR/VER DIRECTION======");
+        Console.WriteLine(projectionPlane[0]);
+        Console.WriteLine(projectionPlane[1]);
+        Console.WriteLine("======HOR/VER AXIS======");
+        Console.WriteLine(horizontalAxis);
+        Console.WriteLine(verticalAxis);
+        
+        var x1 = c1[horizontalAxis];
+        var x2 = c2[horizontalAxis];
+        var y1 = c1[verticalAxis];
+        var y2 = c2[verticalAxis];
+
+        var right = Math.Max(x1, x2);
+        var left = Math.Min(x1, x2);
+
+        var top = Math.Max(y1, y2);
+        var bottom = Math.Min(y1, y2);
+
+        
+        return new[]
+        {
+            left,
+            bottom,
+            right,
+            top
+        };
+    }
+    
+    /// <summary>
+    /// Converts a ushort (range 0-5) the name of one of the 6 the cardinal directions.
+    /// </summary>
+    /// <param name="direction"></param>
+    /// <returns>A string containing the name of the cardinal direction referenced</returns>
+    private static string DirectionIntToString(ushort direction)
+    {
+        return direction switch
+        {
+            0 => "east",
+            1 => "up",
+            2 => "south",
+            3 => "west",
+            4 => "down",
+            5 => "north",
+            _ => throw new Exception("Invalid Direction (ushort)")
+        };
+    }
+    
+    /// <summary>
+    /// Converts the name of one of the 6 the cardinal directions into a ushort (range 0-5) for more compact storage.
+    /// </summary>
+    /// <param name="direction">A string containing the direction</param>
+    /// <returns>The direction as a ushort (0-5)</returns>
+    private static ushort DirectionStringToInt(string direction)
+    {
+        return direction switch
+        {
+            "east" => 0,
+            "up" => 1,
+            "south" => 2,
+            "west" => 3,
+            "down" => 4,
+            "north" => 5,
+            _ => throw new Exception("Invalid Direction (string)")
+        };
+    }
+    
+    /// <summary>
+    /// Splits a direction (x,y,z +\-) into an axis (x,y,z => 0-2) and a sign (the direction on that axis => -1/+1)
+    /// </summary>
+    /// <param name="direction">A ushort (0-5 range) that specifies a direction</param>
+    /// <returns>An array containing the axis and sign, in that order</returns>
+    private static short[] SplitDirection(ushort direction)
+    {
+        if (direction > 5)
+            throw new Exception("Invalid Direction (ushort)");
+        
+        var axis = (short)(direction > 2 ? direction - 3 : direction);
+        var sign = (short)(direction < 3 ? 1 : -1);
+
+        return new[] { axis, sign };
+    }
+
+    /// <summary>
+    /// Re-renders the current part
+    /// </summary>
+    private void ReRenderCurrentPart()
+    {
+        LoadPart(_currentPartName);
+    }
+
+    /// <summary>
+    /// Logs a message (on a new line) to the in-program debug "console"
+    /// </summary>
+    /// <param name="s">The message to log</param>
     private void LogLine(string s)
     {
         Log.Text = Log.Text + s + Environment.NewLine;
 
     }
-
+    /// <summary>
+    /// A struct to hold all the parameters of an element (a textured rectangular prism) in a model
+    /// </summary>
     private struct ModelElement
     {
-        public int[] From = new int[3];
-        public int[] To = new int[3];
-
+        /// <summary>
+        /// Starting coordinate for the rectangular prism
+        /// </summary>
+        public readonly int[] From = new int[3];
+        
+        /// <summary>
+        /// Finishing coordinate for the rectangular prism
+        /// </summary>
+        public readonly int[] To = new int[3];
+        
+        /// <summary>
+        /// The path to the texture
+        /// </summary>
         public string Tex = "";
         
+        /// <summary>
+        /// UV coordinates for the texture<br></br>
+        /// [0] = Start X<br></br>
+        /// [1] = Start Y<br></br>
+        /// [2] = Width<br></br>
+        /// [3] = Height
+        /// </summary>
         public int[] UV = new int[4];
 
         public ModelElement()
         {
         }
     }
-}
+    
+    /// <summary>
+    /// Direction Chooser handler
+    /// </summary>
+    private void DirectionChooser_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // set new view direction
+        _viewDirection = DirectionStringToInt(((string)((ComboBoxItem)DirectionChooser.SelectedValue).Content).ToLower());
+        
+        // reload the part to apply changes
+        ReRenderCurrentPart();
+    }
+    
+    /// <summary>
+    /// Layer Scrollbar handler
+    /// </summary>
+    private void LayerScrollChange(object sender, EventArgs e)
+    {
+        SetLayer((int)Math.Round(LayerScroll.Value));
+    }
+    /// <summary>
+    /// Layer Manual Setter handler
+    /// </summary>
+    private void LayerNumber_TextChanged(object sender, EventArgs e)
+    {
+        try
+        {
+            var value = int.Parse(LayerNumber.Text);
 
+            SetLayer(value);
+        }
+        catch { }
+
+    }
+    
+    /// <summary>
+    /// Scrolling on Editor changes layer number
+    /// </summary>
+    private void Editor_OnMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        SetLayer(e.Delta < 0 ? ProgramData.Layer - 1 : ProgramData.Layer + 1);
+    }
+    
+    /// <summary>
+    /// Part Selection handler
+    /// </summary>
+    private void PartsNode_Onclick(object sender, MouseButtonEventArgs e)
+    {
+        string nodeName;
+
+        try
+        {
+            nodeName = ((TreeViewItem)sender).Name;
+        }
+        catch
+        {
+            nodeName = ((TreeView)sender).Name;
+        }
+        
+        
+        if (nodeName == "Root")
+            return;
+
+        _currentPartName = nodeName;
+        
+        LoadPart(nodeName);
+    }
+
+}
+/// <summary>
+/// Loaded Lost Cities Data Class
+/// </summary>
 internal static class Data
 {
-    //public static List<string> Blocks = new();
     public static readonly JObject Palettes = new();
     public static readonly JObject Parts = new();
 }
 
+/// <summary>
+/// Assets Class<br></br><br></br>
+/// Dictionaries: <br></br>
+/// Textures - path_to_texture => texture<br></br>
+/// Models - blockstate => model_json<br></br>
+/// AdditionalModels - name_of_model => model_json<br></br>
+/// </summary>
 internal static class Assets
 {
-    public static readonly Dictionary<string, Bitmap> Textures = new(); // path_to_texture : texture      | minecraft/textures/block/oak_log : (stone bitmap)
-    public static readonly Dictionary<string, JObject> Models = new(); // name_of_blockstate : model_json | oak_log[axis=x] : (oak_log model (axis = x))
-    public static readonly Dictionary<string, JObject> AdditionalModels = new(); // name_of_model : model_json | minecraft:block/cube/all : (block model (axis = x))
+    public static readonly Dictionary<string, Bitmap> Textures = new();             // path_to_texture => texture          | minecraft/textures/block/oak_log => (stone bitmap)
+    public static readonly Dictionary<string, JObject> Models = new();              // name_of_blockstate => model_json    | oak_log[axis=x] : (oak_log model for x axis facing direction)
+    public static readonly Dictionary<string, JObject> AdditionalModels = new();    // name_of_model => model_json         | minecraft:block/cube/all : (block model for x axis facing direction)
 }
-
+/// <summary>
+/// Layer - Current layer index<br></br>
+/// Layers - All the layers (Bitmap) for the currently loaded part.
+/// </summary>
 internal static class ProgramData
 {
     public static int Layer;
