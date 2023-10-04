@@ -35,7 +35,7 @@ public partial class MainWindow
         new ushort[] { 0, 1 }  // 5, N, -Z = 01
     };
 
-    private static readonly Color BaseColor = Color.FromArgb(32, 255, 255, 255);
+    private static readonly Color FogColor = Color.FromArgb(32, 255, 255, 255);
     
     public MainWindow()
     {
@@ -573,7 +573,7 @@ public partial class MainWindow
     private Bitmap GetTextureFromBlockState(string blockstate, ushort direction)
     {
         // Manual Override
-        //blockstate = "ladder[facing=north]";
+        blockstate = "potted_cactus";
 
         // air has no model
         if (blockstate == "air")
@@ -602,31 +602,15 @@ public partial class MainWindow
         var modelElements = (List<ModelElement>)decodedModel[1];
         var textureDefinitions = (Dictionary<string, string>)decodedModel[2];
         
+        // if there are no elements to render, return air
+        if (modelElements.Count == 0)
+            return GetTexture("air");
+        
         // calculate the size of the model
-        var maxCoord = 0;
-        var minCoord = 0;
-        
-        foreach (var modelElement in modelElements)
-        {
-            for (var i = 0; i < 3; i++)
-            {
-                maxCoord = Math.Max(maxCoord, modelElement.From[i]);
-                maxCoord = Math.Max(maxCoord, modelElement.To[i]);
-                
-                minCoord = Math.Min(minCoord, modelElement.From[i]);
-                minCoord = Math.Min(minCoord, modelElement.To[i]);
-            }
-        }
-        
-        var texSize = Math.Max(16, maxCoord - minCoord);
-        var texOffset = -minCoord;
-        
-        Console.WriteLine("========min/max========");
-        Console.WriteLine(minCoord);
-        Console.WriteLine(maxCoord);
-        Console.WriteLine("========size/offset========");
-        Console.WriteLine(texSize);
-        Console.WriteLine(texOffset);
+        /*var maxCoord = 0;
+        var minCoord = 0;*/
+
+        var elementCount = modelElements.Count;
 
         var splitDirection = SplitDirection(direction);
 
@@ -635,49 +619,136 @@ public partial class MainWindow
 
         // sort the elements from furthest to closest
         var sortedModelElements = modelElements.ToArray().OrderBy(e => Math.Max(e.From[axis] * sign, e.To[axis] * sign));
+
+
+        //var texOffsetX = new int[elementCount];
+        //var texOffsetY = new int[elementCount];
+
+        var flattenedCordsPerElement = new double[4][];
+        
+        flattenedCordsPerElement[0] = new double[elementCount];
+        flattenedCordsPerElement[1] = new double[elementCount];
+        flattenedCordsPerElement[2] = new double[elementCount];
+        flattenedCordsPerElement[3] = new double[elementCount];
+
+        var i = 0;
+        foreach (var modelElement in sortedModelElements)
+        {
+            var flattenedCords = FlattenCoords(modelElement.From, modelElement.To, direction);
+
+            flattenedCordsPerElement[0][i] = flattenedCords[0];
+            flattenedCordsPerElement[1][i] = flattenedCords[1];
+            flattenedCordsPerElement[2][i] = flattenedCords[2];
+            flattenedCordsPerElement[3][i] = flattenedCords[3];
+
+            i++;
+        }
+        
+        // calculate the size of the resulting texture, and keep it at a minimum of 16x16
+        var texSizeX = Math.Max((int)Math.Ceiling(flattenedCordsPerElement[2].Max()), 16);
+        var texSizeY = Math.Max((int)Math.Ceiling(flattenedCordsPerElement[3].Max()), 16);
+        
+        
+        Console.WriteLine("Texture Size (x, y): " + texSizeX + " x " + texSizeY);
+        
+        // if the model does not have anything to render, return air (OVERRIDDEN FOR DEBUGGING)
+        if (texSizeX == 0 || texSizeY == 0)
+            return GetTexture(modelElements[0].Tex);
+
+
+        /*i = 0;
+        foreach (var modelElement in sortedModelElements)
+        {
+            var flattenedCords = FlattenCoords(modelElement.From, modelElement.To, direction);
+
+            //texOffsetX[i] = (int)Math.Ceiling(flattenedCords[0]);
+            //texOffsetY[i] = (int)Math.Ceiling(flattenedCords[1]);
+            
+            // Console.WriteLine("=======TEX OFFSET X / Y=====");
+            // Console.WriteLine(texOffsetX[i]);
+            // Console.WriteLine(texOffsetY[i]);
+            
+            i++;
+        }*/
         
         // create resulting texture
-        var resultTexture = new Bitmap(texSize, texSize);
-    
-        
+        var resultTexture = new Bitmap(texSizeX, texSizeY);
+
+        i = 0;
         // draw each element onto the texture
         foreach (var modelElement in sortedModelElements)
         {
             var originalTexture = GetTexture(textureDefinitions[modelElement.Tex]);
-            var texture = new Bitmap(texSize, texSize);
+            var texture = new Bitmap(texSizeX, texSizeY);
             
             // Add a slight "fog" to better distinguish depth
-            for (var x = 0; x < texSize; x++)
+            for (var x = 0; x < texSizeX; x++)
             {
-                for (var y = 0; y < texSize; y++)
+                for (var y = 0; y < texSizeY; y++)
                 {
-                    texture.SetPixel(x, y, BaseColor);
+                    texture.SetPixel(x, y, FogColor);
                 }
             }
             
             var flattenedCoords = FlattenCoords(modelElement.From, modelElement.To, direction);
-
-            var startX  = flattenedCoords[0];
-            var startY  = flattenedCoords[1];
-            var finishX = flattenedCoords[2];
-            var finishY = flattenedCoords[3];
             
-            Console.WriteLine("=======START/FINISH X======");
-            Console.WriteLine(startX + ", " + finishX);
-            Console.WriteLine("=======START/FINISH Y======");
-            Console.WriteLine(startY + ", " + finishY);
+            // calculate start/finish x/y coords, flipping y to go from 0=top to 0=bottom (world coords -> image coords)
+            var startX  = (int)Math.Floor(flattenedCoords[0]); // 6
+            var startY  = (int)Math.Floor(texSizeY - flattenedCoords[3]); // 0
+
+            var finishX = (int)Math.Floor(flattenedCoords[2]); // 9
+            var finishY = (int)Math.Floor(texSizeY - flattenedCoords[1]); // 10
+
+            // direction to count in
+            var yDec = startY > finishY;
+            var xDec = startX > finishX;
+            
+            
+            Console.WriteLine("=======START X/Y, FINISH X/Y for " + modelElement.Tex + "======");
+            Console.WriteLine(startX + ", " + startY);
+            Console.WriteLine(finishX + ", " + finishY);
+            Console.WriteLine();
+
+            // counters, for UV cords
+            var x2 = 0;
+            var y2 = 0;
+            
+            var uvCoords = modelElement.UV;
             
             // cut out UV from original texture and paste it on top of resulting texture
-            for (var x = startX; x < finishX; x++)
+            // these for loops can change counting direction (increment or decrement). Finish values are exclusive.
+            for (var x = startX; xDec ? x > finishX : x < finishX; x = xDec ? x-1 : x+1)
             {
-                for (var y = startY; y < finishY; y++)
+                for (var y = startY; yDec ? y > finishY : y < finishY; y = yDec ? y-1 : y+1)
                 {
-                    texture.SetPixel(texOffset + x, texOffset + y, originalTexture.GetPixel(x-startX, y-startY));
+                    var col = originalTexture.GetPixel(x2 + uvCoords[0], y2 + uvCoords[1]);
+                    try
+                    {
+                        // Console.WriteLine(texOffsetX[i] + x);
+                        // Console.WriteLine(texOffsetY[i] + y);
+                        
+                        texture.SetPixel(x, y, col);
+                    }
+                    catch
+                    {
+                        Console.WriteLine("blockstate: " + blockstate);
+                        Console.WriteLine("x: " + x);
+                        Console.WriteLine("y: " + y);
+
+                        throw;
+                    }
+
+                    y2++;
                 }
+
+                y2 = 0;
+                x2++;
             }
             
             using var gr2 = Graphics.FromImage(resultTexture);
             gr2.DrawImage(texture, 0, 0);
+
+            i++;
         }
 
         return resultTexture;
@@ -832,21 +903,20 @@ public partial class MainWindow
 
         }
 
-        // specific model rendering        
-        if (!solidBlock)
+        // solid blocks do not need fancy model interpretation. otherwise, interpret the model
+        if (solidBlock) return new ArrayList { true, solidTexture, null };
         {
-            
             var textureDefinitions = new Dictionary<string, string>();
             var modelElements = new List<ModelElement>();
-            
             
             // elements could be in model or in parent model or in parent parent model etc.
             JArray? elements = null;
 
 
-            var found = new bool[] { false, false };
-
+            var found = new [] { false, false };
             var currentModel = model;
+            
+            // get textures
             while (true)
             {
                 if (currentModel.TryGetValue("elements", out var elementTokens) && !found[0])
@@ -879,10 +949,9 @@ public partial class MainWindow
                     break; // exit with results
             }
             
+            // get cube bounds / UV
             if (elements != null)
             {
-                Console.WriteLine("found. " + blockstate);
-
 
                 // Load model elements
                 foreach (var element in elements)
@@ -896,8 +965,8 @@ public partial class MainWindow
                     ((JArray)element["to"]).CopyTo(toTokens, 0);
                     for (var i = 0; i < 3; i++)
                     {
-                        modelElement.From[i] = fromTokens[i].Value<int>();
-                        modelElement.To[i] = toTokens[i].Value<int>();
+                        modelElement.From[i] = fromTokens[i].Value<double>();
+                        modelElement.To[i] = toTokens[i].Value<double>();
                     }
 
                     // Cube UV
@@ -908,11 +977,12 @@ public partial class MainWindow
 
                         var uvTokens = new JToken[4];
 
-                        if (!((JObject)face)
-                            .ContainsKey("uv")) // if the face does not specify a texture UV, use the whole texture
+                        if (!((JObject)face).ContainsKey("uv")) // if the face does not specify a texture UV, use the whole texture, masked by the cube bounds
                         {
-                            var texture = GetTexture(textureDefinitions[modelElement.Tex]);
-                            ((JObject)face).Add("uv", new JArray { 0, 0, texture.Width, texture.Height });
+                            var flattenedCords = FlattenCoords(modelElement.From, modelElement.To, direction);
+                            
+                            // get the UV
+                            ((JObject)face).Add("uv", new JArray { flattenedCords[0], flattenedCords[1], flattenedCords[2], flattenedCords[3] });
                         }
 
 
@@ -928,40 +998,29 @@ public partial class MainWindow
             }
             return new ArrayList {false, modelElements, textureDefinitions};
         }
-        
-        return new ArrayList {true, solidTexture, null};
-        
+
     }
     
     
     /// <summary>
     /// Converts 2 opposing 3D Coordinates (To and From for a rectangular prism) into 2 opposing corner coordinates (3D) of a 2D rectangle in this order: <br></br>
-    /// [0] = Top Left X<br></br>
-    /// [1] = Top Left Y<br></br>
-    /// [2] = Bottom Right X<br></br>
-    /// [3] = Bottom Right Y<br></br>
+    /// [0] = Left (Min X)<br></br>
+    /// [3] = Bottom (Min Y)<br></br>
+    /// [2] = Right (Max X)<br></br>
+    /// [1] = Top (Max Y)<br></br>
     /// </summary>
     /// <param name="c1">The first 3D Coordinate</param>
     /// <param name="c2">The second, opposing, 3D Coordinate</param>
     /// <param name="direction">The direction we are, relative to the object (negated facing direction)</param>
-    /// <returns>2 3D Coordinates</returns>
-    private static int[] FlattenCoords(IReadOnlyList<int> c1, IReadOnlyList<int> c2, ushort direction)
+    /// <returns>The edge positions of the resulting square</returns>
+    private static double[] FlattenCoords(IReadOnlyList<double> c1, IReadOnlyList<double> c2, ushort direction)
     {
         // get position of the 4 faces which make up the 4 edges of the rectangle
         var projectionPlane = ProjectionPlanes[direction];
         
-        // UP / SOUTH
-        
         // get axis part of the direction
         var horizontalAxis = SplitDirection(projectionPlane[0])[0];
         var verticalAxis = SplitDirection(projectionPlane[1])[0];
-        
-        Console.WriteLine("======HOR/VER DIRECTION======");
-        Console.WriteLine(projectionPlane[0]);
-        Console.WriteLine(projectionPlane[1]);
-        Console.WriteLine("======HOR/VER AXIS======");
-        Console.WriteLine(horizontalAxis);
-        Console.WriteLine(verticalAxis);
         
         var x1 = c1[horizontalAxis];
         var x2 = c2[horizontalAxis];
@@ -973,7 +1032,6 @@ public partial class MainWindow
 
         var top = Math.Max(y1, y2);
         var bottom = Math.Min(y1, y2);
-
         
         return new[]
         {
@@ -1063,12 +1121,12 @@ public partial class MainWindow
         /// <summary>
         /// Starting coordinate for the rectangular prism
         /// </summary>
-        public readonly int[] From = new int[3];
+        public readonly double[] From = new double[3];
         
         /// <summary>
         /// Finishing coordinate for the rectangular prism
         /// </summary>
-        public readonly int[] To = new int[3];
+        public readonly double[] To = new double[3];
         
         /// <summary>
         /// The path to the texture
